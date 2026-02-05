@@ -359,15 +359,32 @@ def run_bot():
     bot.infinity_polling()
     
 # --- 8. CLOUD SERVER KEEPALIVE ---
+# This web server MUST run for Render to keep the app alive
 app = Flask(__name__)
-if __name__ == "__main__":
-    # 1. Start the Bot in a background thread
-    t_bot = threading.Thread(target=run_bot)
-    t_bot.daemon = True
-    t_bot.start()
-    
-    # 2. Start the Fake Web Server (This keeps Render happy)
-    # Render assigns a random PORT, we must listen to it
+
+@app.route('/')
+def home():
+    return "🤖 Agent is running!"
+
+def run_flask():
+    # Render assigns a port automatically in the environment variable 'PORT'
+    # We must listen on '0.0.0.0' to be accessible
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Starting Web Server on port {port}...")
     app.run(host='0.0.0.0', port=port)
+
+if __name__ == "__main__":
+    # 1. Start the Web Server in a background thread
+    # (This ensures Render sees an open port immediately)
+    t_server = threading.Thread(target=run_flask)
+    t_server.daemon = True
+    t_server.start()
+
+    # 2. Start the Scanner in a background thread
+    t_scanner = threading.Thread(target=scanner_job)
+    t_scanner.daemon = True
+    t_scanner.start()
+
+    # 3. Start the Telegram Bot on the Main Thread
+    # (This blocks the script here, which is fine because threads are running)
+    print("🤖 Agent V8 Master is Online...")
+    bot.infinity_polling()
