@@ -1,3 +1,5 @@
+import os
+from flask import Flask
 import telebot
 import yfinance as yf
 import pandas as pd
@@ -7,8 +9,7 @@ import time
 import requests
 from datetime import datetime
 import pytz
-from flask import Flask
-import os
+
 # ==========================================
 # 🔴 CONFIGURATION
 # ==========================================
@@ -340,12 +341,33 @@ def run_bot():
     print("🤖 Agent V8 Master is Online...")
     bot.infinity_polling()
 
+# --- 8. CLOUD SERVER KEEPALIVE ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Bot is alive!"
+
+def run_bot():
+    # Start the Scanner Loop in its own thread
+    t_scanner = threading.Thread(target=scanner_job)
+    t_scanner.daemon = True  # Ensure it dies when main app dies
+    t_scanner.start()
+    
+    # Start the Telegram Listener
+    print("🤖 Agent V8 Master is Online...")
+    bot.infinity_polling()
+    
+# --- 8. CLOUD SERVER KEEPALIVE ---
+app = Flask(__name__)
 if __name__ == "__main__":
     # 1. Start the Bot in a background thread
     t_bot = threading.Thread(target=run_bot)
+    t_bot.daemon = True
     t_bot.start()
     
-    # 2. Start the Fake Web Server (Keeps Render happy)
+    # 2. Start the Fake Web Server (This keeps Render happy)
     # Render assigns a random PORT, we must listen to it
     port = int(os.environ.get('PORT', 5000))
+    print(f"🚀 Starting Web Server on port {port}...")
     app.run(host='0.0.0.0', port=port)
