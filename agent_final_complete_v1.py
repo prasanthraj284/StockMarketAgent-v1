@@ -14,16 +14,19 @@ import pytz
 # ==========================================
 # 🔴 CONFIGURATION
 # ==========================================
-API_TOKEN = "8308798372:AAHlfoTwHG98Azvd-iY50EDp7bjugBwORAw"
-YOUR_CHAT_ID = "7960622303"
+API_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # <--- PASTE TOKEN
+YOUR_CHAT_ID = "YOUR_CHAT_ID"          # <--- PASTE ID
 # ==========================================
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 
+# GLOBAL STATE FOR DEDUPLICATION
+alert_history = {} # Stores { "NVDA": "BULL", "TSLA": "BEAR" }
+current_day = None # To track daily resets
+
 # --- 1. DATA SOURCES & CACHING ---
 def log_trade_to_csv(trade_data):
-    """Saves every alert to a CSV file for tracking"""
     file_exists = os.path.isfile('live_trades.csv')
     with open('live_trades.csv', 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=trade_data.keys())
@@ -38,15 +41,10 @@ def parse_month_arg(month_str):
 def get_sp300_tickers():
     cache_file = "sp300_cache.csv"
     current_time = time.time()
-    
-    # Check Cache
     if os.path.exists(cache_file):
         if current_time - os.path.getmtime(cache_file) < 86400:
-            try:
-                return pd.read_csv(cache_file)['Ticker'].tolist()
+            try: return pd.read_csv(cache_file)['Ticker'].tolist()
             except: pass
-
-    # Download Fresh
     try:
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         tables = pd.read_html(url)
@@ -54,8 +52,7 @@ def get_sp300_tickers():
         pd.DataFrame(tickers, columns=['Ticker']).to_csv(cache_file, index=False)
         return tickers
     except:
-        return ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "AMZN", "GOOGL", "META", "SPY", "QQQ", 
-                "IWM", "COIN", "PLTR", "SOFI", "MARA", "BA", "DIS", "NFLX", "JPM", "XOM"]
+        return ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "AMZN", "GOOGL", "META", "SPY", "QQQ"]
 
 def get_dynamic_movers():
     try:
@@ -68,7 +65,7 @@ def get_dynamic_movers():
             return tickers[:30]
     except: return ["TSLA", "NVDA", "AMD", "PLTR", "SOFI"]
 
-# --- 2. V20 INDICATORS ---
+# --- 2. V20 INDICATOR ENGINE ---
 def calculate_indicators(df):
     df['SMA50'] = df['Close'].rolling(window=50).mean()
     df['SMA200'] = df['Close'].rolling(window=200).mean()
@@ -190,16 +187,13 @@ def find_best_option(ticker, direction, atr, current_price, force_month=None):
         stock = yf.Ticker(ticker)
         exps = stock.options
         if not exps: return None
-        
         today = datetime.now()
         best_expiry = None
-        
         if force_month:
             candidates = [e for e in exps if f"-{force_month}-" in e]
             if candidates:
                 candidates.sort(key=lambda x: abs(int(x.split('-')[2]) - 15))
                 best_expiry = candidates[0]
-        
         if not best_expiry:
             valid = {}
             for e in exps:
@@ -213,16 +207,12 @@ def find_best_option(ticker, direction, atr, current_price, force_month=None):
 
         move = atr * 1.5
         target_strike = current_price + move if direction == "BULL" else current_price - move
-        
         opt = stock.option_chain(best_expiry)
         chain = opt.calls if direction == "BULL" else opt.puts
         chain = chain[chain['openInterest'] > 50]
-        
         if chain.empty: return None
-        
         chain['diff'] = abs(chain['strike'] - target_strike)
         best = chain.sort_values('diff').iloc[0]
-        
         return {"type": "CALL" if direction=="BULL" else "PUT", "strike": best['strike'], 
                 "price": best['lastPrice'], "expiry": best_expiry, "oi": best['openInterest']}
     except: return None
@@ -233,13 +223,10 @@ def analyze_stock(ticker, strict=True):
         stock = yf.Ticker(ticker)
         df = stock.history(period="2y")
         if len(df) < 250: return None
-        
         df = calculate_indicators(df)
         latest = df.iloc[-1]
-        
         fvg, fvg_s = check_fvg(df)
         wick, wick_s = analyze_wick_rejection(latest)
-        
         data = {
             'Price': latest['Close'], 'SMA50': latest['SMA50'], 'SMA200': latest['SMA200'], 'EMA20': latest['EMA20'],
             'RSI': latest['RSI'], 'ADX': latest['ADX'], 'Plus_DI': latest['Plus_DI'], 'Minus_DI': latest['Minus_DI'],
@@ -247,33 +234,28 @@ def analyze_stock(ticker, strict=True):
             'Vol_Ratio': latest['Vol_Ratio'], 'ROC_5': latest['ROC_5'], 'ROC_10': latest['ROC_10'],
             'Lower_Highs': latest['Lower_Highs'], 'Support_Break': latest['Support_Break']
         }
-        
         bull, bull_reasons = calculate_bull_score(data, wick, wick_s, fvg, fvg_s)
         bear, confirms, bear_reasons = calculate_bear_score(data, wick, wick_s, fvg, fvg_s)
-        
         direction = None
         reasons = []
         stop = 0; target = 0
-        
         if bull >= 75 and latest['ADX'] > 25:
             direction = "BULL"
             reasons = bull_reasons
             stop = latest['Close'] - (latest['ATR'] * 2.5)
             target = latest['Close'] + (latest['ATR'] * 3.5)
-            
         elif bear <= 35 and confirms >= 4:
             direction = "BEAR"
             reasons = bear_reasons
             stop = latest['Close'] + (latest['ATR'] * 2.0)
             target = latest['Close'] - (latest['ATR'] * 4.0)
-            
+        
         if not strict and not direction:
             return {
                 "Ticker": ticker, "Price": round(latest['Close'], 2),
                 "Score": int(bull), "Direction": "NEUTRAL", 
                 "Reasons": ["No setup found"], "Stop": 0, "Target": 0, "ATR": latest['ATR']
             }
-
         if direction:
             return {
                 "Ticker": ticker, "Price": round(latest['Close'], 2),
@@ -287,17 +269,14 @@ def analyze_stock(ticker, strict=True):
 def generate_msg(data, opt):
     if data['Direction'] == "NEUTRAL":
         return f"⚖️ **{data['Ticker']} NEUTRAL**\nScore: {data['Score']}\nNo trade setup found."
-
     icon = "🚀" if data['Direction'] == "BULL" else "🔻"
     color = "🟢" if data['Direction'] == "BULL" else "🔴"
     reasons = "\n".join([f"• {r}" for r in data['Reasons'][:3]])
-    
     opt_txt = "⚠️ Shares Only"
     if opt:
         opt_txt = (f"⚡ **Option:** {opt['type']} ${opt['strike']}\n"
                    f"📅 {opt['expiry']} (OI: {opt['oi']})\n"
                    f"💲 Est Cost: ${opt['price']}")
-        
     return (
         f"{icon} **{data['Direction']} ALERT: {data['Ticker']}**\n"
         f"Score: {data['Score']}/100 {color}\n"
@@ -308,7 +287,7 @@ def generate_msg(data, opt):
         f"💰 Target: ${data['Target']}"
     )
 
-# --- 6. TELEGRAM COMMANDS ---
+# --- 6. COMMANDS ---
 @bot.message_handler(commands=['check'])
 def manual_check(message):
     try:
@@ -316,56 +295,62 @@ def manual_check(message):
         if len(parts) < 2: return bot.reply_to(message, "⚠️ Use: /check TICKER [MONTH]")
         ticker = parts[1].upper()
         month = parse_month_arg(parts[2]) if len(parts) > 2 else None
-        
         bot.reply_to(message, f"🔍 Checking {ticker}...")
         data = analyze_stock(ticker, strict=False)
-        
         if data:
             opt = find_best_option(ticker, data['Direction'], data['ATR'], data['Price'], month)
             bot.send_message(message.chat.id, generate_msg(data, opt), parse_mode="Markdown")
-        else:
-            bot.reply_to(message, "❌ Error analyzing ticker.")
+        else: bot.reply_to(message, "❌ Error analyzing ticker.")
     except Exception as e: bot.reply_to(message, f"Error: {e}")
 
 @bot.message_handler(commands=['scan'])
 def manual_scan(message):
-    bot.reply_to(message, "🦅 Force-Scanning Market...")
+    bot.reply_to(message, "🦅 Force-Scanning...")
     sp300 = get_sp300_tickers()
     movers = get_dynamic_movers()
     all_tickers = list(set(sp300 + movers))
-    
     bot.reply_to(message, f"🔍 Scanning {len(all_tickers)} stocks...")
     found = 0
-    
     for ticker in all_tickers:
         data = analyze_stock(ticker, strict=True)
         if data:
-            opt = find_best_option(ticker, data['Direction'], data['ATR'], data['Price'])
-            bot.send_message(message.chat.id, generate_msg(data, opt), parse_mode="Markdown")
-            found += 1
+            # DEDUPLICATION LOGIC
+            last_alert = alert_history.get(ticker)
+            if last_alert != data['Direction']:
+                opt = find_best_option(ticker, data['Direction'], data['ATR'], data['Price'])
+                bot.send_message(message.chat.id, generate_msg(data, opt), parse_mode="Markdown")
+                alert_history[ticker] = data['Direction']
+                found += 1
             time.sleep(1)
-    
-    if found == 0: bot.reply_to(message, "😴 No setups found right now.")
+    if found == 0: bot.reply_to(message, "😴 No new setups found.")
     else: bot.reply_to(message, f"✅ Scan Done. {found} alerts sent.")
 
 @bot.message_handler(commands=['log'])
 def send_log_file(message):
-    """Sends the CSV file to the user so data isn't lost on restart"""
     if os.path.exists('live_trades.csv'):
         with open('live_trades.csv', 'rb') as f:
             bot.send_document(message.chat.id, f)
-    else:
-        bot.reply_to(message, "⚠️ No trade log found yet.")
+    else: bot.reply_to(message, "⚠️ No trade log found yet.")
 
-# --- 7. AUTO SCANNER ---
+# --- 7. SMART AUTO SCANNER ---
 def scanner_loop():
-    print("✅ Agent V20 Started...")
+    print("✅ Agent V20.5 (Smart Alerts) Started...")
+    global current_day, alert_history
+    
     while True:
         try:
             tz = pytz.timezone('US/Eastern')
             now = datetime.now(tz)
             
+            # Daily Reset
+            if current_day != now.day:
+                alert_history.clear()
+                current_day = now.day
+                print("🔄 Daily Reset: Alert History Cleared.")
+
+            # Scan Hours: 06:00 to 17:00 EST
             if 6 <= now.hour < 17 and now.weekday() < 5:
+                
                 sp300 = get_sp300_tickers()
                 movers = get_dynamic_movers()
                 all_tickers = list(set(sp300 + movers))
@@ -374,20 +359,37 @@ def scanner_loop():
                 for ticker in all_tickers:
                     data = analyze_stock(ticker, strict=True)
                     if data:
-                        opt = find_best_option(ticker, data['Direction'], data['ATR'], data['Price'])
-                        try:
-                            bot.send_message(YOUR_CHAT_ID, generate_msg(data, opt), parse_mode="Markdown")
-                            log_trade_to_csv({
-                                "Time": now.strftime("%Y-%m-%d %H:%M"),
-                                "Ticker": ticker, "Direction": data['Direction'],
-                                "Price": data['Price'], "Score": data['Score'],
-                                "Reasons": "; ".join(data['Reasons'])
-                            })
-                            time.sleep(2)
-                        except: pass
+                        # --- SMART DEDUPLICATION ---
+                        last_alert = alert_history.get(ticker)
+                        
+                        # Only alert if Direction Changed (e.g. None -> BULL, or BULL -> BEAR)
+                        if last_alert != data['Direction']:
+                            opt = find_best_option(ticker, data['Direction'], data['ATR'], data['Price'])
+                            try:
+                                bot.send_message(YOUR_CHAT_ID, generate_msg(data, opt), parse_mode="Markdown")
+                                
+                                # Update History
+                                alert_history[ticker] = data['Direction']
+                                
+                                # Log CSV
+                                log_trade_to_csv({
+                                    "Time": now.strftime("%Y-%m-%d %H:%M"),
+                                    "Ticker": ticker, "Direction": data['Direction'],
+                                    "Price": data['Price'], "Score": data['Score'],
+                                    "Reasons": "; ".join(data['Reasons'])
+                                })
+                                time.sleep(2)
+                            except: pass
+                    
                     time.sleep(0.3)
-                print("💤 Scan complete. Waiting 15 mins...")
-                time.sleep(900)
+                
+                # --- ADAPTIVE SLEEP ---
+                if now.hour < 9:
+                    print("💤 Pre-Market: Sleeping 60 mins...")
+                    time.sleep(3600)
+                else:
+                    print("💤 Market Open: Sleeping 30 mins...")
+                    time.sleep(1800)
             else:
                 print("🌙 Market Closed.")
                 time.sleep(600)
@@ -395,12 +397,11 @@ def scanner_loop():
             print(f"Scanner Error: {e}")
             time.sleep(60)
 
-# --- 8. WEB SERVER (PORT FIX) ---
+# --- 8. SERVER ---
 @app.route('/')
-def index(): return "Agent V20 Online", 200
+def index(): return "Agent V20.5 Online", 200
 
 def run_server():
-    # CRITICAL FIX: Use the PORT environment variable provided by the cloud
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
