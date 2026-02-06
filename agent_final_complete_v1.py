@@ -14,8 +14,8 @@ import pytz
 # ==========================================
 # 🔴 CONFIGURATION
 # ==========================================
-API_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # <--- PASTE TOKEN
-YOUR_CHAT_ID = "YOUR_CHAT_ID"          # <--- PASTE ID
+API_TOKEN = "8308798372:AAHlfoTwHG98Azvd-iY50EDp7bjugBwORAw"  # <--- PASTE TOKEN
+YOUR_CHAT_ID = "7960622303"          # <--- PASTE ID
 # ==========================================
 
 bot = telebot.TeleBot(API_TOKEN)
