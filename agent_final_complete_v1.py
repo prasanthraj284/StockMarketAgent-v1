@@ -33,7 +33,7 @@ last_heartbeat = datetime.now()
 @bot.message_handler(commands=['help', 'start'])
 def cmd_help(message):
     msg = (
-        "🤖 **AGENT V21 COMMAND GUIDE**\n\n"
+        "🤖 **AGENT COMMAND GUIDE**\n\n"
         
         "1️⃣ **ENTER A TRADE (Bot Alert)**\n"
         "Usage: `/entered [ID] [PRICE] [QTY]`\n"

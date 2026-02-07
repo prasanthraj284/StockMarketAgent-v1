@@ -8,5 +8,5 @@ flask
 requests
 lxml
 pytz
-python-dotenv  <-- NEW ADDITION
+python-dotenv
 google-auth
