@@ -62,15 +62,15 @@ def calculate_score(data):
     bull = 50; bear = 50; reasons = []
     
     # Bull Logic
-    if data['Price'] > data['SMA50']: bull += 10
-    if data['ADX'] > 25: bull += 10
+    if data['Price'] > data['SMA50']: bull += 10; reasons.append("Above SMA50")
+    if data['ADX'] > 25: bull += 10; reasons.append("Strong Trend (ADX>25)")
     if data['RSI'] < 30: bull += 25; reasons.append("RSI Oversold")
-    if data['BB_Position'] < 0.2: bull += 12
-    if data['Price'] > data['SMA50'] and data['Price'] > data['SMA200']: reasons.append("Strong Uptrend")
+    if data['BB_Position'] < 0.2: bull += 12; reasons.append("Bollinger Bounce")
+    if data['Price'] > data['SMA50'] and data['Price'] > data['SMA200']: reasons.append("Major Uptrend")
     
     # Bear Logic
-    if data['Price'] < data['SMA50']: bear -= 15
-    if data['Price'] < data['SMA200']: bear -= 15; reasons.append("Downtrend")
+    if data['Price'] < data['SMA50']: bear -= 15; reasons.append("Below SMA50")
+    if data['Price'] < data['SMA200']: bear -= 15; reasons.append("Major Downtrend")
     if data['RSI'] > 70: bear -= 18; reasons.append("RSI Overbought")
     
     return bull, bear, reasons
@@ -102,7 +102,7 @@ def analyze_stock(ticker, strict=True):
                 "Ticker": ticker, "Price": round(curr['Close'], 2), 
                 "Score": bull if direction=="BULL" else (100-bear), "Direction": direction or "NEUTRAL", 
                 "ATR": curr['ATR'], 
-                "Reasons": reasons # <--- CRITICAL for /check command
+                "Reasons": reasons 
             }
 
         # For auto-scan, return ONLY if direction found
@@ -111,7 +111,7 @@ def analyze_stock(ticker, strict=True):
             return {
                 "ID": sig_id, "Ticker": ticker, "Direction": direction, 
                 "Score": bull if direction=="BULL" else (100-bear),
-                "Price": round(curr['Close'], 2), "Stop": 0, "Target": 0, # Will calc in main
+                "Price": round(curr['Close'], 2), "Stop": 0, "Target": 0,
                 "Reasons": reasons, "ATR": curr['ATR']
             }
     except: return None
@@ -132,5 +132,11 @@ def find_option(ticker, direction, atr, price):
         
         # Find closest strike
         best = chain.iloc[(chain['strike'] - target_strike).abs().argsort()[:1]].iloc[0]
-        return {"strike": best['strike'], "expiry": best_date, "price": best['lastPrice']}
+        
+        return {
+            "strike": best['strike'], 
+            "expiry": best_date, 
+            "price": best['lastPrice'],
+            "oi": int(best.get('openInterest', 0)) # NEW: Added Open Interest
+        }
     except: return None
