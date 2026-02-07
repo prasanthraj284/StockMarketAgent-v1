@@ -1,8 +1,12 @@
-pyTelegramBotAPI
+gspread
+oauth2client
 yfinance
 pandas
 numpy
+pyTelegramBotAPI
+flask
 requests
 lxml
 pytz
-flask
+python-dotenv  <-- NEW ADDITION
+google-auth
