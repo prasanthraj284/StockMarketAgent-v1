@@ -12,8 +12,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # MODULE IMPORTS
+# ✅ IMPORT parse_month_arg so we can understand "JUN", "SEP", etc.
 from database import TradeManager
-from analysis import analyze_stock, find_option, get_sp300_tickers, get_dynamic_movers
+from analysis import analyze_stock, find_option, get_sp300_tickers, get_dynamic_movers, parse_month_arg
 
 # --- CONFIG ---
 API_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -111,22 +112,64 @@ def cmd_manual(message):
         if success: bot.reply_to(message, f"✅ Added **{type_}** for {ticker}\n📅 Expiry: {expiry}")
     except Exception as e: bot.reply_to(message, f"Error: {e}")
 
+@bot.message_handler(commands=['scan'])
+def cmd_scan(message):
+    bot.reply_to(message, "🔍 **Force Scan Initiated...**\nChecking Watchdog & scanning 300+ tickers.")
+    
+    # 1. Run Watchdog (Check active trades)
+    check_portfolio()
+    
+    # 2. Run Scanner (Force run regardless of time)
+    # We run this in a thread so it doesn't freeze the bot
+    def run_force_scan():
+        tickers = list(set(get_sp300_tickers() + get_dynamic_movers()))
+        found = 0
+        for ticker in tickers:
+            # strict=True means only return valid setups
+            data = analyze_stock(ticker, strict=True)
+            if data:
+                # Log to DB
+                db.log_bot_signal(data)
+                
+                # Find Option
+                opt = find_option(ticker, data['Direction'], data['ATR'], data['Price'])
+                
+                # Format & Send Alert
+                msg = format_alert(data, opt, is_auto=True)
+                bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
+                found += 1
+                time.sleep(1) # Anti-spam delay
+            time.sleep(0.1) # Respect API limits
+        
+        bot.send_message(CHAT_ID, f"✅ **Scan Complete.** Found {found} setups.")
+
+    # Start the thread
+    threading.Thread(target=run_force_scan).start()
+
 @bot.message_handler(commands=['check'])
 def cmd_check(message):
     try:
         parts = message.text.split()
-        if len(parts) < 2: return bot.reply_to(message, "⚠️ Usage: /check TICKER")
+        if len(parts) < 2: return bot.reply_to(message, "⚠️ Usage: `/check TICKER [MONTH]`")
         
         ticker = parts[1].upper()
+        
+        # ✅ NEW: Check if user typed a month (e.g., "JUN")
+        force_month = None
+        if len(parts) >= 3:
+            raw_month = parts[2]
+            force_month = parse_month_arg(raw_month) # Converts "JUN" -> "06"
+            if not force_month:
+                bot.reply_to(message, f"⚠️ Unknown month: {raw_month}. Using default 45 days.")
+        
         bot.reply_to(message, f"🔍 Analyzing {ticker}...")
         
+        # Analyze
         data = analyze_stock(ticker, strict=False)
         
         if data:
-            data['Stop'] = round(data['Price'] - (data['ATR']*2.5) if data['Direction'] == "BULL" else data['Price'] + (data['ATR']*2.0), 2)
-            data['Target'] = round(data['Price'] + (data['ATR']*3.5) if data['Direction'] == "BULL" else data['Price'] - (data['ATR']*4.0), 2)
-            
-            opt = find_option(ticker, data['Direction'], data['ATR'], data['Price'])
+            # ✅ PASS force_month to the finder
+            opt = find_option(ticker, data['Direction'], data['ATR'], data['Price'], force_month=force_month)
             
             # Use the Shared Format Function
             msg = format_alert(data, opt, is_auto=False)
@@ -189,7 +232,7 @@ def cmd_portfolio(message):
 @bot.message_handler(commands=['help', 'start'])
 def cmd_help(message):
     msg = ("🤖 **COMMAND GUIDE**\n\n"
-           "`/check TICKER` - Analyze stock\n"
+           "`/check TICKER [MONTH]` - Analyze stock\n"
            "`/manual TICKER TYPE PRICE QTY STOP` - Add trade\n"
            "`/close TICKER TYPE PRICE` - Close trade\n"
            "`/portfolio` - View active trades")
@@ -249,14 +292,10 @@ def scanner_loop():
                     data = analyze_stock(ticker, strict=True)
                     if data:
                         if alert_history.get(ticker) != data['Direction']:
-                            data['Stop'] = round(data['Price'] - (data['ATR']*2.5) if data['Direction'] == "BULL" else data['Price'] + (data['ATR']*2.0), 2)
-                            data['Target'] = round(data['Price'] + (data['ATR']*3.5) if data['Direction'] == "BULL" else data['Price'] - (data['ATR']*4.0), 2)
-                            
+                            # ✅ FIX: Don't calc stops here, use what analyze_stock gave us
                             db.log_bot_signal(data)
-                            
                             opt = find_option(ticker, data['Direction'], data['ATR'], data['Price'])
                             
-                            # Use the Shared Format Function (Auto Mode)
                             msg = format_alert(data, opt, is_auto=True)
                             
                             bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
