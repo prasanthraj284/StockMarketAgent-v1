@@ -21,32 +21,48 @@ def parse_month_arg(month_str):
               'JUL': '07', 'AUG': '08', 'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'}
     return months.get(month_str[:3].upper(), None)
 
-def get_sp300_tickers():
-    cache_file = "sp300_cache.csv"
-    current_time = time.time()
-    if os.path.exists(cache_file):
-        if current_time - os.path.getmtime(cache_file) < 86400:
-            try: return pd.read_csv(cache_file)['Ticker'].tolist()
-            except: pass
-    try:
-        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        tables = pd.read_html(url)
-        tickers = [t.replace('.', '-') for t in tables[0]['Symbol'].tolist()][:300]
-        pd.DataFrame(tickers, columns=['Ticker']).to_csv(cache_file, index=False)
-        return tickers
-    except:
-        return ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "AMZN", "GOOGL", "META", "SPY", "QQQ"]
+# --- IMPORT DATABASE ---
+from database import TradeManager
+db_manager = TradeManager() # Initialize connection
 
+# --- 1. GET MAIN TICKERS (From Sheet) ---
+def get_sp300_tickers():
+    # We no longer rely on Wikipedia. We trust YOUR Sheet.
+    tickers = db_manager.get_main_tickers()
+    if not tickers:
+        print("⚠️ Warning: Google Sheet returned 0 tickers. Using Emergency Static List.")
+        return ["AAPL", "MSFT", "NVDA", "TSLA", "AMD", "SPY", "QQQ"] # Fallback
+    return tickers
+
+# --- 2. GET DYNAMIC MOVERS (Yahoo -> Sheet Backup) ---
 def get_dynamic_movers():
+    # Attempt 1: Yahoo Finance (The "Live" List)
     try:
         url = "https://finance.yahoo.com/most-active"
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, headers=headers, timeout=5)
+        
         if r.status_code == 200:
             df = pd.read_html(r.text)[0]
-            tickers = [t for t in df['Symbol'].tolist() if "-" not in t and len(t) < 6]
-            return tickers[:30]
-    except: return ["TSLA", "NVDA", "AMD", "PLTR", "SOFI"]
+            # Clean symbols (remove duplicates and weird formatting)
+            live_tickers = [t for t in df['Symbol'].tolist() if "-" not in t and len(t) < 6]
+            print(f"✅ Yahoo Scrape Success: Found {len(live_tickers)} active stocks.")
+            return live_tickers[:20]
+        else:
+            print(f"⚠️ Yahoo Scrape Failed (Status {r.status_code}). Switching to Backup Sheet...")
+            
+    except Exception as e:
+        print(f"⚠️ Yahoo Scrape Error: {e}. Switching to Backup Sheet...")
+
+    # Attempt 2: Google Sheet Backup (The "Safety Net")
+    backup_tickers = db_manager.get_backup_tickers()
+    
+    if backup_tickers:
+        print(f"✅ Loaded {len(backup_tickers)} tickers from 'Tickers_Backup' Sheet.")
+        return backup_tickers
+    else:
+        # Attempt 3: Hardcoded Emergency List (If even the sheet fails)
+        return ["NVDA", "TSLA", "AMD", "PLTR", "SOFI", "COIN", "MARA"]
 
 # --- 2. INDICATOR ENGINE ---
 def calculate_indicators(df):

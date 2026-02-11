@@ -6,6 +6,9 @@ from datetime import datetime
 # CONFIGURATION
 SHEET_NAME = "Gemini Trading Agent Tracker"
 
+
+
+
 class TradeManager:
     def __init__(self):
         self.gc = None
@@ -31,6 +34,28 @@ class TradeManager:
             print("✅ Connected to Google Sheets.")
         except Exception as e:
             print(f"❌ Database Connection Error: {e}")
+
+    # --- NEW: TICKER MANAGEMENT ---
+    def get_main_tickers(self):
+        try:
+            # Reads "Tickers_Main" tab. Assumes Ticker is in Column B (Index 1)
+            ws = self._get_ws("Tickers_Main")
+            vals = ws.get_all_values()
+            # Skip header (Row 1), grab 2nd column
+            return [row[1].upper().strip() for row in vals[1:] if len(row) > 1 and row[1].strip() != ""]
+        except Exception as e:
+            print(f"⚠️ Error reading Tickers_Main: {e}")
+            return []
+
+    def get_backup_tickers(self):
+        try:
+            # Reads "Tickers_Backup" tab. Assumes Ticker is in Column A (Index 0)
+            ws = self._get_ws("Tickers_Backup")
+            vals = ws.get_all_values()
+            return [row[0].upper().strip() for row in vals[1:] if len(row) > 0 and row[0].strip() != ""]
+        except Exception as e:
+            print(f"⚠️ Error reading Tickers_Backup: {e}")
+            return []        
 
     def _init_tabs(self):
         """Creates headers if tabs are empty"""

@@ -114,34 +114,76 @@ def cmd_manual(message):
 
 @bot.message_handler(commands=['scan'])
 def cmd_scan(message):
-    bot.reply_to(message, "🔍 **Force Scan Initiated...**\nChecking Watchdog & scanning 300+ tickers.")
+    status_msg = bot.reply_to(message, "🔍 **Starting Deep Scan...**\nInitializing 300+ Tickers.")
     
-    # 1. Run Watchdog (Check active trades)
-    check_portfolio()
-    
-    # 2. Run Scanner (Force run regardless of time)
-    # We run this in a thread so it doesn't freeze the bot
+    # Run in a separate thread so it doesn't freeze the bot
     def run_force_scan():
+        # 1. Get Tickers
         tickers = list(set(get_sp300_tickers() + get_dynamic_movers()))
-        found = 0
-        for ticker in tickers:
-            # strict=True means only return valid setups
-            data = analyze_stock(ticker, strict=True)
-            if data:
-                # Log to DB
-                db.log_bot_signal(data)
-                
-                # Find Option
-                opt = find_option(ticker, data['Direction'], data['ATR'], data['Price'])
-                
-                # Format & Send Alert
-                msg = format_alert(data, opt, is_auto=True)
-                bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
-                found += 1
-                time.sleep(1) # Anti-spam delay
-            time.sleep(0.1) # Respect API limits
+        total = len(tickers)
         
-        bot.send_message(CHAT_ID, f"✅ **Scan Complete.** Found {found} setups.")
+        # 2. Update Telegram: "I found 340 stocks"
+        bot.edit_message_text(f"🔍 **Deep Scan Started**\nChecking {total} tickers...", 
+                              chat_id=status_msg.chat.id, 
+                              message_id=status_msg.message_id, 
+                              parse_mode="Markdown")
+        
+        found = 0
+        scanned = 0
+        start_time = time.time()
+        
+        print(f"\n--- 🚀 STARTING SCAN OF {total} STOCKS ---")
+        
+        for ticker in tickers:
+            scanned += 1
+            
+            # A) PRINT TO CONSOLE (The Proof)
+            # This makes your terminal scroll so you KNOW it's working
+            print(f"[{scanned}/{total}] Checking {ticker}...", end="\r")
+            
+            # B) UPDATE TELEGRAM PROGRESS (Every 50 stocks)
+            # We don't do this every 1 stock to avoid API Ban
+            if scanned % 50 == 0:
+                try:
+                    bot.edit_message_text(f"🔍 **Scanning...**\nProgress: {scanned}/{total} ({int(scanned/total*100)}%)", 
+                                          chat_id=status_msg.chat.id, 
+                                          message_id=status_msg.message_id, 
+                                          parse_mode="Markdown")
+                except: pass
+
+            # C) THE ANALYSIS
+            try:
+                data = analyze_stock(ticker, strict=True)
+                if data:
+                    print(f"🚨 FOUND SIGNAL: {ticker} ({data['Direction']})")
+                    found += 1
+                    
+                    # Log to DB
+                    db.log_bot_signal(data)
+                    
+                    # Find Option
+                    opt = find_option(ticker, data['Direction'], data['ATR'], data['Price'])
+                    
+                    # Send Alert
+                    msg = format_alert(data, opt, is_auto=True)
+                    bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
+                    
+                    time.sleep(1) # Anti-spam delay
+            except Exception as e:
+                print(f"❌ Error {ticker}: {e}")
+                
+            time.sleep(0.05) # Tiny sleep to prevent CPU spike
+        
+        # 3. Final Report
+        duration = round(time.time() - start_time, 2)
+        print(f"\n--- ✅ SCAN COMPLETE ({duration}s) ---")
+        
+        final_msg = (f"✅ **Scan Complete**\n"
+                     f"⏱ Time: {duration}s\n"
+                     f"📉 Scanned: {scanned}/{total}\n"
+                     f"🎯 Found: {found} Setups")
+                     
+        bot.send_message(CHAT_ID, final_msg, parse_mode="Markdown")
 
     # Start the thread
     threading.Thread(target=run_force_scan).start()
@@ -231,11 +273,65 @@ def cmd_portfolio(message):
 
 @bot.message_handler(commands=['help', 'start'])
 def cmd_help(message):
-    msg = ("🤖 **COMMAND GUIDE**\n\n"
-           "`/check TICKER [MONTH]` - Analyze stock\n"
-           "`/manual TICKER TYPE PRICE QTY STOP` - Add trade\n"
-           "`/close TICKER TYPE PRICE` - Close trade\n"
-           "`/portfolio` - View active trades")
+    msg = (
+        "🤖 **AGENT V21 COMMAND GUIDE**\n"
+        "*(Copy & Paste these examples)*\n\n"
+        
+        "1️⃣ **CHECK A STOCK**\n"
+        "Analyzes technicals & finds options.\n"
+        "• Usage: `/check [TICKER] [OPTIONAL_MONTH]`\n"
+        "• Ex: `/check NVDA` (Default 45 days)\n"
+        "• Ex: `/check AAPL JUN` (Force June Expiry)\n\n"
+        
+        "2️⃣ **ENTER A BOT ALERT**\n"
+        "Use the ID from the alert message.\n"
+        "• Usage: `/entered [ID] [PRICE] [QTY]`\n"
+        "• Ex: `/entered #NVDA_0206 5.50 2`\n\n"
+        
+        "3️⃣ **ENTER MANUAL TRADE (OPTIONS)**\n"
+        "• Usage: `/manual [TICKER] [TYPE] [PRICE] [QTY] [STOP] [EXPIRY]`\n"
+        "• Ex: `/manual TSLA CALL 12.50 5 8.00 2026-06-20`\n"
+        "*(Date Format: YYYY-MM-DD)*\n\n"
+        
+        "4️⃣ **ENTER MANUAL TRADE (SHARES)**\n"
+        "• Usage: `/manual [TICKER] SHARE [PRICE] [QTY] [STOP]`\n"
+        "• Ex: `/manual AMD SHARE 150.00 10 140.00`\n\n"
+        
+        "5️⃣ **CLOSE A POSITION**\n"
+        "• Usage: `/close [TICKER] [TYPE] [EXIT_PRICE]`\n"
+        "• Ex: `/close NVDA CALL 6.00`\n"
+        "• Ex: `/close AMD SHARE 155.00`\n\n"
+        
+        "6️⃣ **TOOLS**\n"
+        "• `/portfolio` - View open trades.\n"
+        "• `/scan` - Force a market scan now.\n"
+        "• `/audit_sheet` - Check if reading 300 tickers."
+    )
+    bot.send_message(message.chat.id, msg, parse_mode="Markdown")
+
+
+@bot.message_handler(commands=['audit_sheet'])
+def cmd_audit_sheet(message):
+    bot.reply_to(message, "🕵️‍♂️ **Auditing 'Tickers_Main' Tab...**")
+    
+    # 1. Force read from Google Sheet
+    # This calls the function we just added to database.py
+    tickers = db.get_main_tickers()
+    
+    count = len(tickers)
+    
+    if count == 0:
+        return bot.send_message(message.chat.id, "❌ **ERROR:** The sheet returned 0 tickers.\nCheck that your tab is named `Tickers_Main` and tickers are in **Column B**.")
+    
+    # 2. Prepare the Report
+    first_3 = ", ".join(tickers[:3])
+    last_3 = ", ".join(tickers[-3:])
+    
+    msg = (f"✅ **SUCCESS: Read {count} Tickers**\n\n"
+           f"🟢 **First 3:** {first_3}\n"
+           f"🔴 **Last 3:** {last_3}\n\n"
+           f"👆 *If this matches your Excel file, the bot is seeing everything.*")
+    
     bot.send_message(message.chat.id, msg, parse_mode="Markdown")
 
 # --- WATCHDOG ---
