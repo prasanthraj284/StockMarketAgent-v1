@@ -23,13 +23,14 @@ jobs:
 
       - name: Create Google credentials file
         env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: |
-          echo "$GOOGLE_CREDENTIALS_JSON" > google_creds.json
+          echo "$GOOGLE_CREDENTIALS" > google_creds.json
 
       - name: Run bot
         env:
-          API_TOKEN: ${{ secrets.API_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GOOGLE_APPLICATION_CREDENTIALS: google_creds.json
         run: |
           python agent_final_complete_v1.py
